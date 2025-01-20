@@ -1,12 +1,13 @@
+import os
 import sqlite3
 from io import BytesIO
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import asyncio
 
 # Telegram bot setup
-TOKEN = os.getenv("BOT_TOKEN", "6854924273:AAEZMeELLJRh7NFs1kgBQYmF-B33qBSO6P8")
-bot_app = ApplicationBuilder().token(TOKEN).build()
+TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+bot_app = Application.builder().token(TOKEN).build()
 
 # Database setup
 DB_PATH = "votes.db"
@@ -39,7 +40,6 @@ CREATE TABLE IF NOT EXISTS voters (
 """)
 conn.commit()
 
-
 # Handler for the /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle the /start command with automatic /votep execution for participants."""
@@ -51,7 +51,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Verify if the user is a member of the channel
             try:
-                chat_member = await context.bot.get_chat_member(channel_id, user.id)
+                chat_member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user.id)
                 if chat_member.status not in ["member", "administrator", "creator"]:
                     raise ValueError("Not a member")
             except Exception:
@@ -87,7 +87,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             # Send participant info and voting button to the channel
-            await bot_app.bot.send_photo(
+            await context.bot.send_photo(
                 chat_id=channel_id,
                 photo=banner_data,
                 caption=f"**PARTICIPANT INFORMATION**\n\n"
@@ -127,34 +127,28 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /setbanner Command
 async def setbanner(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Set a custom banner for votes."""
+    user = update.effective_user
+
     if len(context.args) != 1 or context.args[0] != "872@RrR":
         await update.message.reply_text("Unauthorized: Incorrect password.")
         return
 
-    user = update.effective_user
     await update.message.reply_text("Please send the banner image.")
 
-    async def image_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle the image upload for the banner."""
-        if update.message.photo:
-            file = await update.message.photo[-1].get_file()
+    def check(update: Update):
+        return bool(update.message.photo)
+
+    try:
+        update_with_photo = await bot_app.wait_for_message(filters.PHOTO & filters.user(user.id), timeout=60)
+        if update_with_photo:
+            file = await update_with_photo.message.photo[-1].get_file()
             image_binary = await file.download_as_bytearray()
 
             cursor.execute("INSERT OR REPLACE INTO banners (user_id, banner) VALUES (?, ?)", (user.id, image_binary))
             conn.commit()
             await update.message.reply_text("Banner has been set successfully!")
-            return True
-        await update.message.reply_text("No image found. Please send an image.")
-        return False
-
-    image_handler_instance = MessageHandler(filters.PHOTO, image_handler)
-    bot_app.add_handler(image_handler_instance, group=1)
-
-    async def remove_handler():
-        await asyncio.sleep(60)
-        bot_app.remove_handler(image_handler_instance, group=1)
-
-    asyncio.create_task(remove_handler())
+    except asyncio.TimeoutError:
+        await update.message.reply_text("No image received. Please try again.")
 
 
 # /setchannel Command
@@ -203,7 +197,7 @@ async def votep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        await bot_app.bot.send_photo(
+        await context.bot.send_photo(
             chat_id=channel_id,
             photo=banner_data,
             caption=f"**PARTICIPANT INFORMATION**\n\n"
@@ -241,7 +235,7 @@ async def vote_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channel_id = channel[0]
 
     try:
-        chat_member = await context.bot.get_chat_member(channel_id, voter_id)
+        chat_member = await context.bot.get_chat_member(chat_id=channel_id, user_id=voter_id)
         if chat_member.status not in ["member", "administrator", "creator"]:
             raise Exception("Not a member")
     except Exception:
@@ -273,7 +267,7 @@ async def uncount_leavers():
 
         for username, channel_id, voter_id in voters:
             try:
-                chat_member = await bot_app.bot.get_chat_member(channel_id, voter_id)
+                chat_member = await bot_app.bot.get_chat_member(chat_id=channel_id, user_id=voter_id)
                 if chat_member.status not in ["member", "administrator", "creator"]:
                     cursor.execute("UPDATE votes SET vote_count = vote_count - 1 WHERE username = ?", (username,))
                     cursor.execute("DELETE FROM voters WHERE user_id = ? AND username = ?", (voter_id, username))
@@ -311,10 +305,9 @@ bot_app.add_handler(CommandHandler("setbanner", setbanner))
 bot_app.add_handler(CommandHandler("setchannel", set_channel))
 bot_app.add_handler(CommandHandler("votep", votep))
 bot_app.add_handler(CallbackQueryHandler(vote_callback))
-bot_app.add_handler(CommandHandler("V", V))
 bot_app.add_handler(CommandHandler("votepL", votepL))
 
 # Run the bot
 if __name__ == "__main__":
-    asyncio.run(bot_app.run_polling())
+    asyncio.run(bot_app.start())
     asyncio.create_task(uncount_leavers())
